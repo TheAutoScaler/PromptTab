@@ -1,0 +1,28 @@
+model = "gpt-5.6-luna"
+model_reasoning_effort = "low"
+model_verbosity = "low"
+service_tier = "priority"
+sandbox_mode = "read-only"
+approval_policy = "never"
+project_doc_max_bytes = 0
+
+[analytics]
+enabled = false
+
+[history]
+persistence = "none"
+
+[features]
+apps = false
+browser_use = false
+computer_use = false
+goals = false
+image_generation = false
+in_app_browser = false
+multi_agent = false
+plugins = false
+shell_tool = false
+skill_search = false
+unified_exec = false
+view_image = false
+workspace_dependencies = false
