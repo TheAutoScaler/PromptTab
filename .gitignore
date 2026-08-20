@@ -1,0 +1,27 @@
+# PromptTab runtime state and credentials
+auth.json
+app-server.sock
+app-server.log
+start.lock/
+empty-workspace/
+tmp/
+*.sqlite
+*.sqlite-shm
+*.sqlite-wal
+history.jsonl
+session_index.jsonl
+
+# Python and macOS
+__pycache__/
+*.py[cod]
+.DS_Store
+
+# Local Go build
+/bin/prompttab
+/work/
+
+# Local test and editor state
+.env
+.env.*
+*.swp
+*.swo
