@@ -81,6 +81,18 @@ threads, plugins, skills, and MCP configuration remain isolated. No secret is
 copied. If Codex changes its auth storage format, rerun `codex login` normally and
 check `CODEX_HOME=~/.prompttab codex login status`.
 
+To keep shell startup under separate version control or install somewhere else,
+disable `.bashrc` management and source the installed startup file yourself:
+
+```bash
+PROMPTTAB_HOME="$HOME/.local/share/prompttab" \
+PROMPTTAB_MANAGE_BASHRC=0 \
+    ./install.sh
+```
+
+Your shell configuration must export the same `PROMPTTAB_HOME` value before
+sourcing `$PROMPTTAB_HOME/bashrc.sh`.
+
 ## Test without installing
 
 This stages the isolated environment in `/tmp` and changes only the current Bash

@@ -4,6 +4,15 @@ set -euo pipefail
 
 src="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 dest="${PROMPTTAB_HOME:-$HOME/.prompttab}"
+manage_bashrc="${PROMPTTAB_MANAGE_BASHRC:-1}"
+case "$manage_bashrc" in
+    0|1) ;;
+    *)
+        printf 'PROMPTTAB_MANAGE_BASHRC must be 0 or 1.\n' >&2
+        exit 1
+        ;;
+esac
+
 mkdir -p "$dest/bin" "$dest/empty-workspace"
 chmod 700 "$dest" "$dest/bin" "$dest/empty-workspace"
 install -m 600 "$src/config.toml" "$dest/config.toml"
@@ -63,10 +72,19 @@ if [[ ! -e "$HOME/.codex/auth.json" ]]; then
 fi
 ln -sfn "$HOME/.codex/auth.json" "$dest/auth.json"
 
-marker='source "$HOME/.prompttab/bashrc.sh"'
-if ! grep -Fqx "$marker" "$HOME/.bashrc" 2>/dev/null; then
-    printf '\n%s\n' "$marker" >>"$HOME/.bashrc"
-fi
+case "$manage_bashrc" in
+    1)
+        marker='source "$HOME/.prompttab/bashrc.sh"'
+        if ! grep -Fqx "$marker" "$HOME/.bashrc" 2>/dev/null; then
+            printf '\n%s\n' "$marker" >>"$HOME/.bashrc"
+        fi
+        ;;
+    0) ;;
+esac
 
 "$dest/bin/prompttab" --ping
-printf 'Installed. Run: source "$HOME/.bashrc"\n'
+if [[ "$manage_bashrc" == 1 ]]; then
+    printf 'Installed. Run: source "$HOME/.bashrc"\n'
+else
+    printf 'Installed without editing ~/.bashrc. Source %s/bashrc.sh from your shell configuration.\n' "$dest"
+fi
