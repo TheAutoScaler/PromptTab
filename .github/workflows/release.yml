@@ -48,7 +48,7 @@ jobs:
           mkdir -p staging dist
           go build -trimpath -ldflags "-s -w -X main.version=${VERSION}" -o staging/prompttab ./cmd/prompttab
           tar -C staging -czf "dist/${{ matrix.artifact }}.tar.gz" prompttab
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: ${{ matrix.artifact }}
           path: dist/*.tar.gz
@@ -61,7 +61,7 @@ jobs:
     permissions:
       contents: write
     steps:
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v8
         with:
           path: dist
           merge-multiple: true
