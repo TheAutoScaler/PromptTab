@@ -3,6 +3,7 @@ package main
 import (
 	"bufio"
 	"bytes"
+	"context"
 	"encoding/json"
 	"errors"
 	"flag"
@@ -14,6 +15,7 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"syscall"
 	"time"
 )
@@ -38,12 +40,18 @@ Otherwise, answer it as a general question.
 Do not use tools or inspect files, environment variables, history, repositories, or prior threads.`
 
 type settings struct {
-	home       string
-	socketPath string
-	lockPath   string
-	logPath    string
-	codex      string
-	model      string
+	home             string
+	socketPath       string
+	lockPath         string
+	logPath          string
+	codex            string
+	model            string
+	backend          string
+	localURL         string
+	localName        string
+	localMaxTokens   int
+	localTemperature float64
+	localTimeout     time.Duration
 }
 
 func loadSettings() (settings, error) {
@@ -64,14 +72,35 @@ func loadSettings() (settings, error) {
 	} else if resolvedParent, parentErr := filepath.EvalSymlinks(filepath.Dir(absoluteHome)); parentErr == nil {
 		absoluteHome = filepath.Join(resolvedParent, filepath.Base(absoluteHome))
 	}
-	return settings{
+	config := settings{
 		home:       absoluteHome,
 		socketPath: filepath.Join(absoluteHome, "app-server.sock"),
 		lockPath:   filepath.Join(absoluteHome, "start.lock"),
 		logPath:    filepath.Join(absoluteHome, "app-server.log"),
 		codex:      firstNonEmpty(os.Getenv("CODEX_BIN"), "codex"),
 		model:      firstNonEmpty(os.Getenv("PROMPTTAB_MODEL"), os.Getenv("CODEX_OPTION_TAB_MODEL"), "gpt-5.6-luna"),
-	}, nil
+		backend:    "codex", localURL: "http://127.0.0.1:8012", localName: "Local", localMaxTokens: 32,
+		localTemperature: 0, localTimeout: 750 * time.Millisecond,
+	}
+	if err := loadPromptTabConfig(filepath.Join(absoluteHome, "prompttab.toml"), &config); err != nil {
+		return settings{}, err
+	}
+	config.backend = firstNonEmpty(os.Getenv("PROMPTTAB_BACKEND"), config.backend)
+	if config.backend != "codex" && config.backend != "local" && config.backend != "auto" {
+		return settings{}, fmt.Errorf("unsupported completion backend %q", config.backend)
+	}
+	if config.backend == "local" {
+		// A backend change must not accidentally reuse a broker that was started
+		// with different privacy and provider behavior.
+		config.socketPath = filepath.Join(absoluteHome, "local-server.sock")
+		config.lockPath = filepath.Join(absoluteHome, "local-start.lock")
+		config.logPath = filepath.Join(absoluteHome, "local-server.log")
+	} else if config.backend == "auto" {
+		config.socketPath = filepath.Join(absoluteHome, "auto-server.sock")
+		config.lockPath = filepath.Join(absoluteHome, "auto-start.lock")
+		config.logPath = filepath.Join(absoluteHome, "auto-server.log")
+	}
+	return config, nil
 }
 
 func firstNonEmpty(values ...string) string {
@@ -323,7 +352,21 @@ func modeInstructions(mode string) (string, error) {
 	}
 }
 
-func generate(config settings, rpc *rpcClient, mode, prompt string) (string, error) {
+func validRequestMode(mode string) bool {
+	return mode == "command" || mode == "ask" || mode == "complete" || mode == "local-command" || mode == "backend/status"
+}
+
+type codexBackend struct {
+	config settings
+	rpc    *rpcClient
+}
+
+func (backend *codexBackend) Generate(ctx context.Context, request CompletionRequest) (string, error) {
+	return backend.generate("command", request)
+}
+
+func (backend *codexBackend) generate(mode string, request CompletionRequest) (string, error) {
+	config, rpc := backend.config, backend.rpc
 	instructions, err := modeInstructions(mode)
 	if err != nil {
 		return "", err
@@ -350,7 +393,7 @@ func generate(config settings, rpc *rpcClient, mode, prompt string) (string, err
 	}
 	turnParams := map[string]any{
 		"threadId":              threadResult.Thread.ID,
-		"input":                 []map[string]string{{"type": "text", "text": prompt}},
+		"input":                 []map[string]string{{"type": "text", "text": codexPrompt(request)}},
 		"model":                 config.model,
 		"effort":                "low",
 		"approvalPolicy":        "never",
@@ -430,9 +473,24 @@ func generate(config settings, rpc *rpcClient, mode, prompt string) (string, err
 	}
 }
 
+func codexPrompt(request CompletionRequest) string {
+	var parts []string
+	if request.WorkingDirectory != "" {
+		parts = append(parts, "Current working directory:\n"+request.WorkingDirectory)
+	}
+	if request.Prefix != "" || request.Suffix != "" {
+		parts = append(parts, "Text before cursor:\n"+request.Prefix+"\n\nText after cursor:\n"+request.Suffix)
+	}
+	if request.Prompt != "" {
+		parts = append(parts, request.Prompt)
+	}
+	return strings.Join(parts, "\n\n")
+}
+
 type brokerRequest struct {
-	Mode   string `json:"mode"`
-	Prompt string `json:"prompt"`
+	Mode       string            `json:"mode"`
+	Completion CompletionRequest `json:"completion"`
+	Local      LocalOnlyContext  `json:"local_context,omitempty"`
 }
 
 type brokerResponse struct {
@@ -440,15 +498,77 @@ type brokerResponse struct {
 	Error  string `json:"error,omitempty"`
 }
 
+type serverState struct {
+	config       settings
+	rpc          *rpcClient
+	local        *llamaBackend
+	localHealthy atomic.Bool
+	stopHealth   chan struct{}
+}
+
+func (state *serverState) activeBackend() string {
+	if state.config.backend == "auto" {
+		if state.localHealthy.Load() {
+			return "local"
+		}
+		return "codex"
+	}
+	return state.config.backend
+}
+
+func (state *serverState) monitorLocal() {
+	ticker := time.NewTicker(10 * time.Second)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ticker.C:
+			state.localHealthy.Store(state.local.Healthy(context.Background()))
+		case <-state.stopHealth:
+			return
+		}
+	}
+}
+
+func (state *serverState) codex() (*codexBackend, error) {
+	if state.rpc == nil {
+		rpc, err := initializeRPC(state.config)
+		if err != nil {
+			return nil, err
+		}
+		state.rpc = rpc
+	}
+	return &codexBackend{config: state.config, rpc: state.rpc}, nil
+}
+
 func serve(config settings) error {
 	if err := os.MkdirAll(filepath.Join(config.home, "empty-workspace"), 0700); err != nil {
 		return err
 	}
-	rpc, err := initializeRPC(config)
-	if err != nil {
-		return err
+	state := &serverState{config: config}
+	if config.backend == "codex" {
+		if _, err := state.codex(); err != nil {
+			return err
+		}
+	} else {
+		local, err := newLlamaBackend(config)
+		if err != nil {
+			return err
+		}
+		state.local = local
+		if config.backend == "auto" {
+			state.stopHealth = make(chan struct{})
+			state.localHealthy.Store(local.Healthy(context.Background()))
+			go state.monitorLocal()
+		}
 	}
-	defer rpc.close()
+	defer func() {
+		if state.stopHealth != nil {
+			close(state.stopHealth)
+		}
+		if state.rpc != nil {
+			state.rpc.close()
+		}
+	}()
 	_ = os.Remove(config.socketPath)
 	listener, err := net.Listen("unix", config.socketPath)
 	if err != nil {
@@ -464,7 +584,7 @@ func serve(config settings) error {
 		if err != nil {
 			return err
 		}
-		fatal, err := handleConnection(config, rpc, connection)
+		fatal, err := handleConnection(state, connection)
 		_ = connection.Close()
 		if fatal {
 			return err
@@ -472,7 +592,8 @@ func serve(config settings) error {
 	}
 }
 
-func handleConnection(config settings, rpc *rpcClient, connection net.Conn) (bool, error) {
+func handleConnection(state *serverState, connection net.Conn) (bool, error) {
+	config := state.config
 	_ = connection.SetReadDeadline(time.Now().Add(5 * time.Second))
 	var request brokerRequest
 	err := json.NewDecoder(io.LimitReader(connection, maxMessageSize+1)).Decode(&request)
@@ -482,16 +603,45 @@ func handleConnection(config settings, rpc *rpcClient, connection net.Conn) (boo
 	if err != nil {
 		return false, nil
 	}
-	if strings.TrimSpace(request.Prompt) == "" {
+	if request.Mode == "backend/status" {
+		_ = connection.SetWriteDeadline(time.Now().Add(2 * time.Second))
+		if err := json.NewEncoder(connection).Encode(brokerResponse{Result: state.activeBackend()}); err != nil {
+			return true, err
+		}
+		return false, nil
+	}
+	if strings.TrimSpace(request.Completion.Prompt+request.Completion.Prefix+request.Completion.Suffix) == "" {
 		_ = json.NewEncoder(connection).Encode(brokerResponse{Error: "prompt must not be empty"})
 		return false, nil
 	}
-	result, err := generate(config, rpc, request.Mode, request.Prompt)
+	var result string
+	if request.Mode == "ask" || request.Mode == "command" {
+		var backend *codexBackend
+		backend, err = state.codex()
+		if err == nil {
+			result, err = backend.generate(request.Mode, request.Completion)
+		}
+	} else if request.Mode == "complete" || request.Mode == "local-command" {
+		if state.local == nil {
+			err = errors.New("local completion backend is not configured")
+		} else {
+			if request.Mode == "local-command" {
+				result, err = state.local.GenerateCommandLocal(context.Background(), request.Completion, request.Local)
+			} else {
+				result, err = state.local.GenerateLocal(context.Background(), request.Completion, request.Local)
+			}
+		}
+		if err != nil && config.backend == "auto" {
+			state.localHealthy.Store(false)
+		}
+	} else {
+		err = fmt.Errorf("unsupported request mode: %s", request.Mode)
+	}
 	response := brokerResponse{Result: result}
 	fatal := false
 	if err != nil {
 		response = brokerResponse{Error: err.Error()}
-		fatal = true
+		fatal = request.Mode == "command" || request.Mode == "ask"
 	}
 	_ = connection.SetWriteDeadline(time.Now().Add(2 * time.Second))
 	writeErr := json.NewEncoder(connection).Encode(response)
@@ -504,9 +654,9 @@ func handleConnection(config settings, rpc *rpcClient, connection net.Conn) (boo
 	return false, nil
 }
 
-func request(config settings, mode, prompt string, timeout time.Duration) (string, error) {
-	if _, err := modeInstructions(mode); err != nil {
-		return "", err
+func request(config settings, brokerRequest brokerRequest, timeout time.Duration) (string, error) {
+	if !validRequestMode(brokerRequest.Mode) {
+		return "", fmt.Errorf("unsupported request mode: %s", brokerRequest.Mode)
 	}
 	if err := ensureServer(config); err != nil {
 		return "", err
@@ -517,7 +667,7 @@ func request(config settings, mode, prompt string, timeout time.Duration) (strin
 	}
 	defer connection.Close()
 	_ = connection.SetDeadline(time.Now().Add(timeout))
-	if err := json.NewEncoder(connection).Encode(brokerRequest{Mode: mode, Prompt: prompt}); err != nil {
+	if err := json.NewEncoder(connection).Encode(brokerRequest); err != nil {
 		return "", err
 	}
 	var response brokerResponse
@@ -530,6 +680,13 @@ func request(config settings, mode, prompt string, timeout time.Duration) (strin
 	return response.Result, nil
 }
 
+func resolvedBackend(config settings) (string, error) {
+	if config.backend != "auto" {
+		return config.backend, nil
+	}
+	return request(config, brokerRequest{Mode: "backend/status"}, 2*time.Second)
+}
+
 func run() error {
 	config, err := loadSettings()
 	if err != nil {
@@ -538,11 +695,38 @@ func run() error {
 	serveFlag := flag.Bool("serve", false, "run the local broker")
 	pingFlag := flag.Bool("ping", false, "start the broker if needed and report readiness")
 	versionFlag := flag.Bool("version", false, "print the PromptTab version")
-	modeFlag := flag.String("mode", "command", "request mode: command or ask")
+	modeFlag := flag.String("mode", "command", "request mode: command, local-command, complete, or ask")
+	backendFlag := flag.Bool("backend", false, "print the configured completion backend")
+	backendLabelFlag := flag.Bool("backend-label", false, "print the active completion backend label")
+	cwdFlag := flag.String("cwd", "", "current working directory")
+	prefixFlag := flag.String("prefix", "", "text before the cursor")
+	suffixFlag := flag.String("suffix", "", "text after the cursor")
+	var recent stringListFlag
+	flag.Var(&recent, "recent-command", "recent command for local-only context (repeatable)")
 	timeoutFlag := flag.Duration("timeout", clientTimeout, "foreground request timeout")
 	flag.Parse()
 	if *versionFlag {
 		fmt.Println(version)
+		return nil
+	}
+	if *backendFlag {
+		backend, err := resolvedBackend(config)
+		if err != nil {
+			return err
+		}
+		fmt.Println(backend)
+		return nil
+	}
+	if *backendLabelFlag {
+		backend, err := resolvedBackend(config)
+		if err != nil {
+			return err
+		}
+		if backend == "local" {
+			fmt.Println(config.localName)
+		} else {
+			fmt.Println("Codex")
+		}
 		return nil
 	}
 	if *serveFlag {
@@ -563,16 +747,21 @@ func run() error {
 		return errors.New("prompt exceeds 1 MiB")
 	}
 	prompt := string(promptBytes)
-	if strings.TrimSpace(prompt) == "" {
+	if strings.TrimSpace(prompt+*prefixFlag+*suffixFlag) == "" {
 		return errors.New("prompt must be supplied on stdin")
 	}
-	result, err := request(config, *modeFlag, prompt, *timeoutFlag)
+	result, err := request(config, brokerRequest{Mode: *modeFlag, Completion: CompletionRequest{WorkingDirectory: *cwdFlag, Prefix: *prefixFlag, Suffix: *suffixFlag, Prompt: prompt}, Local: LocalOnlyContext{RecentCommands: recent}}, *timeoutFlag)
 	if err != nil {
 		return err
 	}
 	_, err = fmt.Print(result)
 	return err
 }
+
+type stringListFlag []string
+
+func (values *stringListFlag) String() string         { return strings.Join(*values, ",") }
+func (values *stringListFlag) Set(value string) error { *values = append(*values, value); return nil }
 
 func main() {
 	if err := run(); err != nil {

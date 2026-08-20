@@ -16,6 +16,9 @@ esac
 mkdir -p "$dest/bin" "$dest/empty-workspace"
 chmod 700 "$dest" "$dest/bin" "$dest/empty-workspace"
 install -m 600 "$src/config.toml" "$dest/config.toml"
+if [[ ! -e "$dest/prompttab.toml" ]]; then
+    install -m 600 "$src/prompttab.toml" "$dest/prompttab.toml"
+fi
 install -m 600 "$src/bashrc.sh" "$dest/bashrc.sh"
 install -m 700 "$src/verify.sh" "$dest/verify.sh"
 install -m 700 "$src/uninstall.sh" "$dest/uninstall.sh"

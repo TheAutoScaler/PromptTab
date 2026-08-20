@@ -1,7 +1,7 @@
 # PromptTab
 
 Explicit, privacy-first AI command completion for Bash on macOS, powered by a
-persistent Codex app-server.
+persistent Codex app-server or a resident local `llama-server`.
 
 PromptTab is designed for use with the Codex CLI:
 
@@ -15,9 +15,78 @@ PromptTab is designed for use with the Codex CLI:
   review and is never executed automatically.
 - **Quick Codex queries:** use `?` to ask a general question or explain a shell
   command without executing it.
+- **Fully local completion:** optionally use a small FIM-capable GGUF model for
+  low-latency completion of the text at the cursor. Quick questions remain on Codex.
 
 Only the current editable command line, when non-empty, and the request entered at
 the local `Codex › ` prompt are placed in a command-completion request.
+
+## Local llama.cpp completion
+
+Install llama.cpp (Homebrew builds it with Metal support on Apple Silicon):
+
+```bash
+brew install llama.cpp
+```
+
+Use a FIM-capable GGUF model. A good starting point on an M3 Mac with 24 GB RAM is
+**Qwen2.5-Coder-1.5B Base**, quantized to Q5_K_M or Q4_K_M. Models around 0.5B are
+fastest, 1.5B is a useful quality/latency balance, and 3B can improve quality at
+higher latency. llama.cpp can download and cache the selected Hugging Face quant
+automatically.
+
+Keep one server resident so model loading is not part of the interactive path:
+
+```bash
+llama-server \
+  -hf MaziyarPanahi/Qwen2.5-Coder-1.5B-GGUF:Q5_K_M \
+  --host 127.0.0.1 --port 8012 \
+  --n-gpu-layers 99 --ctx-size 2048 --parallel 1 --cache-reuse 256
+```
+
+Copy the shipped `prompttab.toml` to `~/.prompttab/prompttab.toml` (the installer
+does this without overwriting an existing file), then select the local backend:
+
+```toml
+backend = "auto"
+
+[local]
+name = "Qwen2.5 Coder 1.5B"
+url = "http://127.0.0.1:8012"
+max_tokens = 32
+temperature = 0
+timeout_ms = 750
+```
+
+`local.name` is a display label. The Control-Space request prompt shows that name
+while the local server is active and shows `Codex` when automatic mode has selected
+the remote backend.
+
+With `backend = "auto"`, PromptTab checks the configured URL immediately when its
+broker starts and every 10 seconds afterward. It uses local completion while
+`GET /health` succeeds and Codex otherwise. This probes only the configured URL—it
+does not scan the LAN or arbitrary ports. Use `backend = "local"` to require the
+local server, or `backend = "codex"` to require Codex.
+
+Source `~/.bashrc`, type part of a command such as `git status --`, and press
+Control-Space. In local mode the generated continuation is inserted at the cursor;
+text after the cursor is supplied as the FIM suffix. PromptTab never starts or
+manages `llama-server` itself. The URL defaults to `http://127.0.0.1:8012`, and
+`PROMPTTAB_BACKEND=local` can temporarily override the configured backend. Running
+`~/.prompttab/bin/prompttab --backend` prints the currently resolved backend.
+
+A llama-server normally has one model loaded. To switch models, run the desired
+model on the configured URL, or run several llama-server instances on different
+ports and change `local.url` to the one you want, for example
+`http://127.0.0.1:8013`. PromptTab does not need a model name because the selected
+server URL determines the loaded model.
+
+Local completion may use the working directory and up to eight recent commands as
+extra context. Recent commands and all shell-history-derived context are strictly
+local and are never sent to Codex/OpenAI, including on errors. Codex receives a
+fresh request built only from the current working directory, current editable
+command line/cursor fields, and an explicit user prompt. There is no automatic
+Codex fallback from a failed local completion.
 
 ## Requirements
 
@@ -120,8 +189,11 @@ rm -rf -- "$PROMPTTAB_HOME"
 ```
 
 The first invocation starts one per-user local broker bound only to the private
-Unix socket `~/.prompttab/app-server.sock`; that broker owns one persistent
-`codex app-server --stdio` child. Later shells reuse it. This small broker is needed
+Unix socket `~/.prompttab/app-server.sock`. In Codex mode that broker owns one
+persistent `codex app-server --stdio` child; in local mode it reuses one HTTP client
+to contact the separately resident llama-server. Later shells reuse the broker. The
+local and automatic backends use separate Unix sockets, so changing backend cannot
+reuse a broker configured for another provider mode. This small broker is needed
 because the Homebrew Codex CLI's built-in managed daemon requires the separate
 standalone Codex installation. A dead broker/server is restarted on the next
 invocation. Logs are in `~/.prompttab/app-server.log`.
@@ -214,10 +286,13 @@ PromptTab treats model output exclusively as untrusted text. It strips carriage
 returns and newlines, assigns the result only to `READLINE_LINE`, and never calls
 `eval`, `source`, `bash -c`, `accept-line`, or simulated Enter on generated output.
 
-Only Control-Space invokes PromptTab. Ordinary typing, Tab, Enter, shell history,
-terminal output, environment variables, repositories, and filesystem contents are
-not collected. Please report security issues privately rather than opening a
-public issue containing exploit details.
+Only Control-Space invokes PromptTab. Ordinary typing, Tab, and Enter do not invoke
+it. The local backend can receive the current working directory, current cursor
+contents, and a small recent-command window. Codex/OpenAI can receive the working
+directory and current editable command line, but never receives recent commands or
+shell history. Terminal output, environment variables, repositories, and filesystem
+contents are not collected. Please report security issues privately rather than
+opening a public issue containing exploit details.
 
 ## Compatibility
 

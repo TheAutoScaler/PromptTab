@@ -1,0 +1,10 @@
+# Completion backend: "codex" (default), "local", or "auto".
+# "auto" uses local while llama-server is healthy and Codex otherwise.
+backend = "codex"
+
+[local]
+name = "Local"
+url = "http://127.0.0.1:8012"
+max_tokens = 32
+temperature = 0
+timeout_ms = 750

@@ -13,13 +13,65 @@ if [[ ! -x "$_prompttab_bin" ]]; then
 fi
 
 _codex_ai_assist() {
-    local current instruction result status ai_prompt question helper_home
+    local current instruction result status ai_prompt question helper_home backend backend_label prefix suffix line command
+    local -a local_args
     helper_home="${PROMPTTAB_HOME:-${CODEX_OPTION_TAB_HOME:-$HOME/.prompttab}}"
     current="$READLINE_LINE"
 
     if ! command -v bash >/dev/null 2>&1 || ! command -v stty >/dev/null 2>&1; then
         printf '\aPromptTab requires bash and stty for interactive command entry.\n' >&2
         return 1
+    fi
+
+    backend="$("$helper_home/bin/prompttab" --backend 2>/dev/null)"
+    if [[ "$backend" == local ]]; then
+        backend_label="$("$helper_home/bin/prompttab" --backend-label 2>/dev/null)"
+        [[ -n "$backend_label" ]] || backend_label="Local"
+        question="$backend_label › "
+        instruction="$(
+            bash -c '
+                old_tty="$(stty -g </dev/tty)" || exit 1
+                cleanup() { stty "$old_tty" </dev/tty 2>/dev/null; }
+                trap cleanup EXIT INT TERM HUP
+                stty echo </dev/tty
+                read -e -r -p "$1" answer </dev/tty
+                printf "%s" "$answer"
+            ' _ "$question"
+        )"
+        if [[ -z "${current//[[:space:]]/}" && -z "${instruction//[[:space:]]/}" ]]; then
+            return 0
+        fi
+        prefix="${READLINE_LINE:0:READLINE_POINT}"
+        suffix="${READLINE_LINE:READLINE_POINT}"
+        if [[ -n "${instruction//[[:space:]]/}" ]]; then
+            local_args=(--mode local-command --cwd "$PWD" --prefix "$prefix" --suffix "$suffix")
+        else
+            local_args=(--mode complete --cwd "$PWD" --prefix "$prefix" --suffix "$suffix")
+        fi
+        # `history` is a Bash builtin. Only a small window is passed, and the Go
+        # broker's typed protocol makes this context inaccessible to Codex.
+        while IFS= read -r line; do
+            if [[ "$line" =~ ^[[:space:]]*[0-9]+[[:space:]]+(.*)$ ]]; then
+                command="${BASH_REMATCH[1]}"
+                [[ -n "${command//[[:space:]]/}" ]] && local_args+=(--recent-command "$command")
+            fi
+        done < <(builtin history 8)
+        result="$(printf '%s' "$instruction" | "$helper_home/bin/prompttab" "${local_args[@]}")"
+        status=$?
+        if [[ $status -eq 0 && -n "$result" ]]; then
+            result="${result//$'\r'/}"
+            result="${result//$'\n'/}"
+            if [[ -n "${instruction//[[:space:]]/}" ]]; then
+                READLINE_LINE="$result"
+                READLINE_POINT=${#READLINE_LINE}
+            else
+                READLINE_LINE="${prefix}${result}${suffix}"
+                READLINE_POINT=$((${#prefix} + ${#result}))
+            fi
+        else
+            printf '\aLocal completion failed. Is llama-server running?\n' >&2
+        fi
+        return "$status"
     fi
 
     question="Codex › "
@@ -53,7 +105,7 @@ $instruction"
 $instruction"
     fi
 
-    result="$(printf '%s' "$ai_prompt" | "$helper_home/bin/prompttab")"
+    result="$(printf '%s' "$ai_prompt" | "$helper_home/bin/prompttab" --cwd "$PWD")"
     status=$?
 
     if [[ $status -eq 0 && -n "$result" ]]; then
@@ -86,7 +138,7 @@ prompttab_ask() {
 
     [[ -n "${prompt//[[:space:]]/}" ]] || return 0
 
-    result="$(printf '%s' "$prompt" | "$helper_home/bin/prompttab" --mode ask)"
+    result="$(printf '%s' "$prompt" | "$helper_home/bin/prompttab" --mode ask --cwd "$PWD")"
     status=$?
     if [[ $status -eq 0 ]]; then
         printf '%s\n' "$result"
