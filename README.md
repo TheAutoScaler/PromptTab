@@ -18,75 +18,49 @@ PromptTab is designed for use with the Codex CLI:
 - **Fully local completion:** optionally use a small FIM-capable GGUF model for
   low-latency completion of the text at the cursor. Quick questions remain on Codex.
 
-Only the current editable command line, when non-empty, and the request entered at
-the local `Codex › ` prompt are placed in a command-completion request.
+When Codex is active, it receives only the current working directory, the editable
+command line, and the request entered at the prompt. Local completion may also use
+up to eight recent commands. That extra context stays on your Mac.
 
-## Local llama.cpp completion
+## Install
 
-Install llama.cpp (Homebrew builds it with Metal support on Apple Silicon):
-
-```bash
-brew install llama.cpp
-```
-
-Use a FIM-capable GGUF model. A good starting point on an M3 Mac with 24 GB RAM is
-**Qwen2.5-Coder-1.5B Base**, quantized to Q5_K_M or Q4_K_M. Models around 0.5B are
-fastest, 1.5B is a useful quality/latency balance, and 3B can improve quality at
-higher latency. llama.cpp can download and cache the selected Hugging Face quant
-automatically.
-
-Keep one server resident so model loading is not part of the interactive path:
+You need Bash, the Codex CLI, and a signed-in Codex account. Then run:
 
 ```bash
-llama-server \
-  -hf MaziyarPanahi/Qwen2.5-Coder-1.5B-GGUF:Q5_K_M \
-  --host 127.0.0.1 --port 8012 \
-  --n-gpu-layers 99 --ctx-size 2048 --parallel 1 --cache-reuse 256
+git clone git@github.com:TheAutoScaler/PromptTab.git
+cd PromptTab
+./install.sh
+source "$HOME/.bashrc"
 ```
 
-Copy the shipped `prompttab.toml` to `~/.prompttab/prompttab.toml` (the installer
-does this without overwriting an existing file), then select the local backend:
+## Use
 
-```toml
-backend = "auto"
+Type the start of a command:
 
-[local]
-name = "Qwen2.5 Coder 1.5B"
-url = "http://127.0.0.1:8012"
-max_tokens = 32
-temperature = 0
-timeout_ms = 750
+```bash
+git status --
 ```
 
-`local.name` is a display label. The Control-Space request prompt shows that name
-while the local server is active and shows `Codex` when automatic mode has selected
-the remote backend.
+Press `Control-Space`. At the prompt, say what you want:
 
-With `backend = "auto"`, PromptTab checks the configured URL immediately when its
-broker starts and every 10 seconds afterward. It uses local completion while
-`GET /health` succeeds and Codex otherwise. This probes only the configured URL—it
-does not scan the LAN or arbitrary ports. Use `backend = "local"` to require the
-local server, or `backend = "codex"` to require Codex.
+```text
+finish this command
+```
 
-Source `~/.bashrc`, type part of a command such as `git status --`, and press
-Control-Space. In local mode the generated continuation is inserted at the cursor;
-text after the cursor is supplied as the FIM suffix. PromptTab never starts or
-manages `llama-server` itself. The URL defaults to `http://127.0.0.1:8012`, and
-`PROMPTTAB_BACKEND=local` can temporarily override the configured backend. Running
-`~/.prompttab/bin/prompttab --backend` prints the currently resolved backend.
+PromptTab replaces the line with a suggested command. Read it, change it if needed,
+and press Enter when you want to run it.
 
-A llama-server normally has one model loaded. To switch models, run the desired
-model on the configured URL, or run several llama-server instances on different
-ports and change `local.url` to the one you want, for example
-`http://127.0.0.1:8013`. PromptTab does not need a model name because the selected
-server URL determines the loaded model.
+The prompt says `Codex › ` when Codex is active. When a local model is active, it
+shows the name set by `local.name` in `~/.prompttab/prompttab.toml`.
 
-Local completion may use the working directory and up to eight recent commands as
-extra context. Recent commands and all shell-history-derived context are strictly
-local and are never sent to Codex/OpenAI, including on errors. Codex receives a
-fresh request built only from the current working directory, current editable
-command line/cursor fields, and an explicit user prompt. There is no automatic
-Codex fallback from a failed local completion.
+To ask a question, put `?` before it:
+
+```bash
+? why does DNS use UDP
+```
+
+Normal typing, Tab, and Enter do not contact Codex. PromptTab sends a request only
+when you press `Control-Space` or use `?`.
 
 ## Requirements
 
@@ -132,14 +106,7 @@ therefore replaces Readline's default `set-mark` binding for that key. If macOS 
 Control-Space for input-source switching, disable or remap that shortcut under
 System Settings → Keyboard → Keyboard Shortcuts → Input Sources.
 
-## Install
-
-```bash
-git clone git@github.com:TheAutoScaler/PromptTab.git
-cd PromptTab
-./install.sh
-source "$HOME/.bashrc"
-```
+## Installation details
 
 The installer creates `~/.prompttab` and adds one exact `source` line to
 `~/.bashrc`. It builds the binary from the checkout when Go is available; otherwise,
@@ -161,6 +128,87 @@ PROMPTTAB_MANAGE_BASHRC=0 \
 
 Your shell configuration must export the same `PROMPTTAB_HOME` value before
 sourcing `$PROMPTTAB_HOME/bashrc.sh`.
+
+## Local llama.cpp completion
+
+llama.cpp runs an AI model on your Mac. With it, PromptTab can complete commands
+without sending them to Codex. The `?` command still uses Codex.
+
+Install llama.cpp:
+
+```bash
+brew install llama.cpp
+```
+
+Start a coding model:
+
+```bash
+llama-server \
+  -hf MaziyarPanahi/Qwen2.5-Coder-1.5B-GGUF:Q5_K_M \
+  --host 127.0.0.1 --port 8012 \
+  --n-gpu-layers 99 --ctx-size 2048 --parallel 1 --cache-reuse 256
+```
+
+This command uses **Qwen2.5-Coder-1.5B Base** in Q5_K_M format. It is a good place
+to start on an M3 Mac with 24 GB of memory. A 0.5B model is faster. A 3B model may
+give better results but takes longer. The model must support FIM so it can complete
+text at the cursor. llama.cpp downloads the model from Hugging Face and saves it
+for later.
+
+Open `~/.prompttab/prompttab.toml` and change the first line:
+
+```toml
+backend = "auto"
+```
+
+Start a new shell, type part of a command, and press `Control-Space`. At the local
+model prompt, press Enter without typing anything. The model adds text at the
+cursor. You can also type an instruction, such as `list all files`, to ask for a
+whole command.
+
+With `backend = "auto"`, PromptTab uses llama.cpp when the server is running. It
+uses Codex when the server is not running.
+
+Keep `llama-server` running while you use local completion. PromptTab connects to
+it but does not start or stop it. Here is the full default config:
+
+```toml
+backend = "auto"
+
+[local]
+name = "Qwen2.5 Coder 1.5B"
+url = "http://127.0.0.1:8012"
+max_tokens = 32
+temperature = 0
+timeout_ms = 750
+```
+
+The installer copies this config to `~/.prompttab/prompttab.toml` and keeps an
+existing copy unchanged. `local.name` is the name shown by the Control-Space
+prompt.
+
+With `backend = "auto"`, PromptTab checks the configured URL when its broker starts
+and every 10 seconds after that. It uses the local model when `GET /health` works
+and Codex when it does not. It checks only that URL. It does not scan your network.
+Use `backend = "local"` to require the local server, or `backend = "codex"` to
+require Codex.
+
+In local mode, PromptTab inserts the completion at the cursor. Text after the
+cursor helps the model complete the middle of a command. The URL defaults to
+`http://127.0.0.1:8012`. You can use `PROMPTTAB_BACKEND=local` to change the backend
+for one shell session. Run this to see which backend PromptTab is using:
+
+```bash
+~/.prompttab/bin/prompttab --backend
+```
+
+A llama-server normally loads one model. To switch models, restart it with another
+model. You can also run servers on different ports and change `local.url`.
+
+Local completion may use the working directory and up to eight recent commands for
+context. This recent command data stays on your computer and is never sent to
+Codex/OpenAI, even when local completion fails. There is no automatic Codex retry
+after a failed local completion.
 
 ## Test without installing
 
