@@ -1,11 +1,26 @@
 # PromptTab
 
-PromptTab uses AI to finish Bash commands on macOS. You press `Control-Space`, it
-adds text at the cursor, and you decide whether to run the command. It never runs a
-generated command for you.
+Explicit, privacy-first AI command completion for Bash on macOS, powered by a
+persistent Codex app-server or a resident local `llama-server`.
 
-PromptTab uses Codex by default. You can also run command completion on your Mac
-with llama.cpp.
+PromptTab is designed for use with the Codex CLI:
+
+- **Lower latency:** it keeps its own persistent local Codex app-server running, so
+  each request does not need to start a new Codex process.
+- **Privacy focused:** it sends requests only when you explicitly invoke it. Normal
+  typing, Tab, Enter, history, terminal output, environment variables, and filesystem
+  contents are not sent to OpenAI.
+- **Command completion:** press `Control-Space` to complete a partial command or
+  describe an entirely new one. The result is inserted into your command line for
+  review and is never executed automatically.
+- **Quick Codex queries:** use `?` to ask a general question or explain a shell
+  command without executing it.
+- **Fully local completion:** optionally use a small FIM-capable GGUF model for
+  low-latency completion of the text at the cursor. Quick questions remain on Codex.
+
+Codex receives only the current working directory, the editable command line, and
+the request entered at the `Codex › ` prompt. Local completion may also use up to
+eight recent commands. That extra context stays on your Mac.
 
 ## Install
 
