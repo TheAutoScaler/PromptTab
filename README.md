@@ -1,57 +1,48 @@
 # PromptTab
 
-Explicit, privacy-first AI command completion for Bash on macOS, powered by a
-persistent Codex app-server or a resident local `llama-server`.
+PromptTab uses AI to finish Bash commands on macOS. You press `Control-Space`, it
+adds text at the cursor, and you decide whether to run the command. It never runs a
+generated command for you.
 
-PromptTab is designed for use with the Codex CLI:
+PromptTab uses Codex by default. You can also run command completion on your Mac
+with llama.cpp.
 
-- **Lower latency:** it keeps its own persistent local Codex app-server running, so
-  each request does not need to start a new Codex process.
-- **Privacy focused:** it sends requests only when you explicitly invoke it. Normal
-  typing, Tab, Enter, history, terminal output, environment variables, and filesystem
-  contents are not sent to OpenAI.
-- **Command completion:** press `Control-Space` to complete a partial command or
-  describe an entirely new one. The result is inserted into your command line for
-  review and is never executed automatically.
-- **Quick Codex queries:** use `?` to ask a general question or explain a shell
-  command without executing it.
-- **Fully local completion:** optionally use a small FIM-capable GGUF model for
-  low-latency completion of the text at the cursor. Quick questions remain on Codex.
+## Install
 
-Only the current editable command line, when non-empty, and the request entered at
-the local `Codex › ` prompt are placed in a command-completion request.
-
-## Use PromptTab with a local model
-
-llama.cpp is a program that runs an AI model on your Mac. PromptTab can use it to
-finish commands without sending them to Codex. Quick questions still use Codex.
-
-First, install llama.cpp:
+You need Bash, the Codex CLI, and a signed-in Codex account. Then run:
 
 ```bash
-brew install llama.cpp
+git clone git@github.com:TheAutoScaler/PromptTab.git
+cd PromptTab
+./install.sh
+source "$HOME/.bashrc"
 ```
 
-Then, start a local coding model:
+## Use
+
+Type the start of a command:
 
 ```bash
-llama-server \
-  -hf MaziyarPanahi/Qwen2.5-Coder-1.5B-GGUF:Q5_K_M \
-  --host 127.0.0.1 --port 8012 \
-  --n-gpu-layers 99 --ctx-size 2048 --parallel 1 --cache-reuse 256
+git status --
 ```
 
-After you [install PromptTab](#install), open `~/.prompttab/prompttab.toml` and
-change the first line to:
+Press `Control-Space`. At the `Codex › ` prompt, say what you want:
 
-```toml
-backend = "auto"
+```text
+finish this command
 ```
 
-Source `~/.bashrc`, type part of a command such as `git status --`, and press
-Control-Space. PromptTab uses the local model when the server is running and Codex
-when it is not. See [Local llama.cpp completion](#local-llamacpp-completion) for
-other models and settings.
+PromptTab replaces the line with a suggested command. Read it, change it if needed,
+and press Enter when you want to run it.
+
+To ask a question, put `?` before it:
+
+```bash
+? why does DNS use UDP
+```
+
+Normal typing, Tab, and Enter do not contact Codex. PromptTab sends a request only
+when you press `Control-Space` or use `?`.
 
 ## Requirements
 
@@ -97,14 +88,7 @@ therefore replaces Readline's default `set-mark` binding for that key. If macOS 
 Control-Space for input-source switching, disable or remap that shortcut under
 System Settings → Keyboard → Keyboard Shortcuts → Input Sources.
 
-## Install
-
-```bash
-git clone git@github.com:TheAutoScaler/PromptTab.git
-cd PromptTab
-./install.sh
-source "$HOME/.bashrc"
-```
+## Installation details
 
 The installer creates `~/.prompttab` and adds one exact `source` line to
 `~/.bashrc`. It builds the binary from the checkout when Go is available; otherwise,
@@ -129,14 +113,46 @@ sourcing `$PROMPTTAB_HOME/bashrc.sh`.
 
 ## Local llama.cpp completion
 
-The short setup above uses **Qwen2.5-Coder-1.5B Base** in Q5_K_M format. It is a
-good place to start on an M3 Mac with 24 GB of memory. A 0.5B model is faster. A 3B
-model may give better answers but takes longer. Use a FIM-capable GGUF model so it
-can complete text at the cursor. llama.cpp downloads and caches the chosen model
-from Hugging Face.
+llama.cpp runs an AI model on your Mac. With it, PromptTab can complete commands
+without sending them to Codex. The `?` command still uses Codex.
+
+Install llama.cpp:
+
+```bash
+brew install llama.cpp
+```
+
+Start a coding model:
+
+```bash
+llama-server \
+  -hf MaziyarPanahi/Qwen2.5-Coder-1.5B-GGUF:Q5_K_M \
+  --host 127.0.0.1 --port 8012 \
+  --n-gpu-layers 99 --ctx-size 2048 --parallel 1 --cache-reuse 256
+```
+
+This command uses **Qwen2.5-Coder-1.5B Base** in Q5_K_M format. It is a good place
+to start on an M3 Mac with 24 GB of memory. A 0.5B model is faster. A 3B model may
+give better results but takes longer. The model must support FIM so it can complete
+text at the cursor. llama.cpp downloads the model from Hugging Face and saves it
+for later.
+
+Open `~/.prompttab/prompttab.toml` and change the first line:
+
+```toml
+backend = "auto"
+```
+
+Start a new shell, type part of a command, and press `Control-Space`. At the local
+model prompt, press Enter without typing anything. The model adds text at the
+cursor. You can also type an instruction, such as `list all files`, to ask for a
+whole command.
+
+With `backend = "auto"`, PromptTab uses llama.cpp when the server is running. It
+uses Codex when the server is not running.
 
 Keep `llama-server` running while you use local completion. PromptTab connects to
-it but does not start or stop it. The default config is:
+it but does not start or stop it. Here is the full default config:
 
 ```toml
 backend = "auto"
