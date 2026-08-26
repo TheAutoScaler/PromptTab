@@ -18,9 +18,9 @@ PromptTab is designed for use with the Codex CLI:
 - **Fully local completion:** optionally use a small FIM-capable GGUF model for
   low-latency completion of the text at the cursor. Quick questions remain on Codex.
 
-Codex receives only the current working directory, the editable command line, and
-the request entered at the `Codex › ` prompt. Local completion may also use up to
-eight recent commands. That extra context stays on your Mac.
+When Codex is active, it receives only the current working directory, the editable
+command line, and the request entered at the prompt. Local completion may also use
+up to eight recent commands. That extra context stays on your Mac.
 
 ## Install
 
@@ -41,7 +41,7 @@ Type the start of a command:
 git status --
 ```
 
-Press `Control-Space`. At the `Codex › ` prompt, say what you want:
+Press `Control-Space`. At the prompt, say what you want:
 
 ```text
 finish this command
@@ -49,6 +49,9 @@ finish this command
 
 PromptTab replaces the line with a suggested command. Read it, change it if needed,
 and press Enter when you want to run it.
+
+The prompt says `Codex › ` when Codex is active. When a local model is active, it
+shows the name set by `local.name` in `~/.prompttab/prompttab.toml`.
 
 To ask a question, put `?` before it:
 
